@@ -84,6 +84,17 @@ RUN apk add --no-cache tini poppler-utils bash git && \
     addgroup -S -g 1001 open-design && \
     adduser -S -D -H -u 1001 -G open-design open-design
 
+# Agent runtimes. Open Design is an orchestrator: it spawns external agent
+# CLIs found on PATH (the daemon never installs them itself). Ship the two
+# self-hostable ones so the deployed instance can actually generate:
+#   - @openai/codex  -> `codex`   (ChatGPT-login / API-key agent)
+#   - opencode-ai    -> `opencode` (BYOK provider gateway; daemon bin fallback)
+# Both publish musl builds that run on node:*-alpine (verified 0.142.x / 1.17.x).
+RUN npm i -g @openai/codex opencode-ai && \
+    codex --version && \
+    opencode --version && \
+    npm cache clean --force
+
 WORKDIR /app
 COPY --from=build --chown=open-design:open-design /app/deploy/daemon ./apps/daemon
 COPY --from=build --chown=open-design:open-design /app/apps/web/out ./apps/web/out
@@ -100,16 +111,27 @@ COPY --from=build --chown=open-design:open-design /app/assets/community-pets ./a
 # via the same registry path third-party plugins use.
 COPY --from=build --chown=open-design:open-design /app/plugins/_official ./plugins/_official
 
-RUN mkdir -p /app/.od && \
+RUN mkdir -p /app/.od/home && \
     chown -R open-design:open-design /app
 
 ENV NODE_ENV=production
 ENV NODE_OPTIONS=--max-old-space-size=192
 ENV OD_BIND_HOST=0.0.0.0
 ENV OD_PORT=7456
+# Agent CLI auth (codex ~/.codex, opencode ~/.config/opencode, vela ~/.amr)
+# lives under HOME. Point HOME at the persistent /app/.od volume so a one-time
+# `codex login` (and any other agent auth) survives image rebuilds — the
+# unprivileged `open-design` user has no home dir of its own (adduser -H).
+ENV HOME=/app/.od/home
+# The container runs unprivileged, so Codex cannot build its Landlock/seccomp
+# workspace-write sandbox; danger-full-access is the sanctioned override
+# (see codexNeedsDangerFullAccessSandbox in runtimes/defs/codex.ts).
+ENV OD_CODEX_SANDBOX=danger-full-access
 
 EXPOSE 7456
 
 USER open-design
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["node", "apps/daemon/dist/cli.js", "--no-open"]
+# The persistent volume mounts over /app/.od at runtime and can mask the
+# build-time HOME dir, so (re)create it before the daemon starts.
+CMD ["sh", "-lc", "mkdir -p \"$HOME\" && exec node apps/daemon/dist/cli.js --no-open"]
