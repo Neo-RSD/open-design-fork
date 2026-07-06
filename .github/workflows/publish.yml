@@ -9,6 +9,13 @@
 #   OD_API_TOKEN           daemon bearer (bypasses the Traefik basic-auth gate)
 #   WEBSITE_DEPLOY_SSH_KEY private half of a WRITE deploy key on
 #                          Neo-RSD/website_deploy (scoped to that repo only)
+#   CLOUDFLARE_API_TOKEN   Cloudflare token (Pages:Edit) for the Direct-Upload deploy
+#   CLOUDFLARE_ACCOUNT_ID  Cloudflare account id (NeoRSD)
+#
+# The published/ snapshot is committed to website_deploy (versioned history)
+# AND Direct-Upload-deployed to the `od-published` Cloudflare Pages project
+# (public serving at od-published.pages.dev/<slug>/). Manual trigger only, so
+# the existing site is never affected and only an explicit publish goes live.
 name: Publish to website_deploy
 
 on:
@@ -61,3 +68,14 @@ jobs:
             git commit -m "Publish Open Design snapshot ($(date -u +%FT%TZ))"
             git push
           fi
+
+      - name: Deploy published/ to Cloudflare Pages (Direct Upload)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PUBLISH_ROOT: ${{ github.event.inputs.publish_root }}
+        run: |
+          npx --yes wrangler@3 pages deploy "website_deploy/${PUBLISH_ROOT:-published}" \
+            --project-name=od-published \
+            --branch=main \
+            --commit-dirty=true
