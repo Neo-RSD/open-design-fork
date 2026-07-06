@@ -199,6 +199,45 @@ export interface ProjectMetadata {
   // cohorts' retention/usage (tracking spec C15 / §6).
   enrichmentStatus?: 'programmatic' | 'ai_refined';
   enrichmentCompletedAt?: number;
+  // Decision 15 / publish-contract — per-project selection for public
+  // publishing. Opt-in: absence (or `enabled: false`) means the project is
+  // NEVER exported to the public plane. Consumed by both the app-native
+  // Cloudflare Pages deploy and the `website_deploy` CI pipeline; both honor
+  // the publish contract (path-safe reachable file set from the entry).
+  publish?: ProjectPublishConfig;
+}
+
+/**
+ * Per-project public-publish selection. The publish flag is explicit and
+ * opt-in; the exporter publishes exactly the enabled set and nothing else.
+ */
+export interface ProjectPublishConfig {
+  /** Explicit opt-in. Absence of this config (or `false`) = not publishable. */
+  enabled: boolean;
+  /**
+   * Entry HTML document (project-root relative) that anchors the publishable
+   * unit. Defaults to `metadata.entryFile` or `index.html`.
+   */
+  entry?: string;
+  /**
+   * Stable public slug (kebab-case). Defaults to a slugified project name.
+   * Must stay stable across republishes so public URLs don't churn.
+   */
+  slug?: string;
+  /** ISO-8601 timestamp of the last publish-flag change. */
+  updatedAt?: string;
+}
+
+/** Request body for `PUT /api/projects/:id/publish`. */
+export interface SetProjectPublishRequest {
+  enabled: boolean;
+  entry?: string;
+  slug?: string;
+}
+
+/** Response for `PUT /api/projects/:id/publish` and `GET .../publish`. */
+export interface ProjectPublishResponse {
+  publish: ProjectPublishConfig;
 }
 
 export interface Project {
