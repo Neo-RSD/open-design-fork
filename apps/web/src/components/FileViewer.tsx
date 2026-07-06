@@ -128,6 +128,7 @@ import type {
 import { Icon } from './Icon';
 import { RemixIcon } from './RemixIcon';
 import { SocialShareGrid } from './SocialShareGrid';
+import { PublishToggle } from './PublishToggle';
 import { Toast } from './Toast';
 import { PreviewDrawOverlay, type DrawToolbarElement } from './PreviewDrawOverlay';
 import {
@@ -11158,6 +11159,7 @@ function HtmlViewer({
                     </div>
                   ) : null}
                 </div>
+              <PublishToggle projectId={projectId} entry={file.name} />
               <label className="deploy-provider-field">
                 <span className="deploy-field-title">{t('fileViewer.deployProviderLabel')}</span>
                 <select
