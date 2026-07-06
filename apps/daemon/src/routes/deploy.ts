@@ -1,5 +1,11 @@
+import { createHash } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 import type { Express } from 'express';
 import type { RouteDeps } from '../server-context.js';
+import {
+  assertArtifactPublicationAllowed,
+  ArtifactPublicationBlockedError,
+} from '../artifacts/publication-guard.js';
 
 export interface RegisterDeployRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'ids' | 'deploy' | 'projectStore'> {}
 
@@ -141,6 +147,87 @@ export function registerDeployRoutes(app: Express, ctx: RegisterDeployRoutesDeps
         err instanceof DeployError && err.details
           ? { details: err.details }
           : {};
+      sendApiError(
+        res,
+        status,
+        status === 404 ? 'FILE_NOT_FOUND' : 'BAD_REQUEST',
+        String(err?.message || err),
+        init,
+      );
+    }
+  });
+
+  // Path B publish pipeline (Decision 15 / publish-contract). Returns the
+  // publish-contract file set for a publish-flagged project so an external CI
+  // exporter (website_deploy) can assemble a static snapshot without
+  // re-implementing the reachability walk. Read-only; enforces the contract
+  // gates: opt-in flag (409 if not enabled), path-safe reachable file set
+  // (buildDeployFileSet throws 400 on missing/invalid refs), and the
+  // placeholder publication guard (422). Reachable-only: includeProjectFiles
+  // is false so unreferenced drafts never leak.
+  app.get('/api/projects/:id/publish/export', async (req, res) => {
+    try {
+      const project = getProject(db, req.params.id);
+      if (!project) {
+        return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
+      }
+      const publish = project.metadata?.publish;
+      if (!publish?.enabled) {
+        return sendApiError(
+          res,
+          409,
+          'PROJECT_NOT_PUBLISH_ENABLED',
+          'project is not flagged for publishing',
+        );
+      }
+      const entry = publish.entry || project.metadata?.entryFile || 'index.html';
+      const files = await buildDeployFileSet(PROJECTS_DIR, req.params.id, entry, {
+        metadata: project.metadata,
+        includeProjectFiles: false,
+      });
+      const entryFile = files.find((f: any) => f.file === 'index.html');
+      if (entryFile) {
+        assertArtifactPublicationAllowed(entryFile.data);
+      }
+      const hash = createHash('sha256');
+      const outFiles = [...files]
+        .sort((a: any, b: any) => a.file.localeCompare(b.file))
+        .map((f: any) => {
+          const buf = Buffer.isBuffer(f.data)
+            ? f.data
+            : typeof f.data === 'string'
+              ? Buffer.from(f.data, 'utf8')
+              : Buffer.from(f.data);
+          hash.update(f.file);
+          hash.update(buf);
+          return {
+            path: f.file,
+            contentType: f.contentType ?? 'application/octet-stream',
+            contentBase64: buf.toString('base64'),
+          };
+        });
+      const unit = {
+        id: req.params.id,
+        title: project.name,
+        slug: publish.slug || req.params.id,
+        kind: project.metadata?.kind ?? 'html',
+        entry,
+        sourceProjectId: req.params.id,
+        sourceEntry: entry,
+        publishedAt: new Date().toISOString(),
+        contentHash: `sha256:${hash.digest('hex')}`,
+        fileCount: outFiles.length,
+      };
+      res.json({ unit, files: outFiles });
+    } catch (err: any) {
+      if (err instanceof ArtifactPublicationBlockedError) {
+        return sendApiError(res, 422, 'ARTIFACT_PUBLICATION_BLOCKED', err.message, {
+          placeholders: err.placeholders,
+        });
+      }
+      const status = err instanceof DeployError ? err.status : 400;
+      const init =
+        err instanceof DeployError && err.details ? { details: err.details } : {};
       sendApiError(
         res,
         status,
