@@ -5,9 +5,10 @@
 # serves website_deploy.
 #
 # Required repo secrets:
-#   OD_BASE_URL           https://design.realsolutions.cloud
-#   OD_API_TOKEN          daemon bearer (bypasses the Traefik basic-auth gate)
-#   WEBSITE_DEPLOY_TOKEN  token with contents:write on Neo-RSD/website_deploy
+#   OD_BASE_URL            https://design.realsolutions.cloud
+#   OD_API_TOKEN           daemon bearer (bypasses the Traefik basic-auth gate)
+#   WEBSITE_DEPLOY_SSH_KEY private half of a WRITE deploy key on
+#                          Neo-RSD/website_deploy (scoped to that repo only)
 name: Publish to website_deploy
 
 on:
@@ -33,7 +34,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Neo-RSD/website_deploy
-          token: ${{ secrets.WEBSITE_DEPLOY_TOKEN }}
+          ssh-key: ${{ secrets.WEBSITE_DEPLOY_SSH_KEY }}
           path: website_deploy
 
       - uses: actions/setup-node@v4
