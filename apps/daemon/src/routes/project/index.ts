@@ -56,6 +56,26 @@ import { registerProjectConversationRoutes } from './conversations.js';
 
 export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'projectFiles' | 'conversations' | 'templates' | 'status' | 'events' | 'ids' | 'telemetry' | 'appConfig' | 'agents' | 'validation'> {}
 
+// Publish-flag helpers (Decision 15 / publish-contract). A publishable unit is
+// anchored by a project-root-relative HTML entry; the public slug is kebab-case
+// and stable across republishes.
+function isPublishableEntryPath(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith('/') || trimmed.includes('..') || trimmed.includes('\\')) {
+    return false;
+  }
+  return /\.html?$/i.test(trimmed);
+}
+
+function slugifyPublishSlug(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+}
+
 function projectDetailResolvedDir(
   projectsRoot: string,
   project: any,
@@ -2128,6 +2148,96 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       /** @type {import('@open-design/contracts').ProjectResponse} */
       const body = { project };
       res.json(body);
+    } catch (err: any) {
+      sendApiError(res, 400, 'BAD_REQUEST', String(err));
+    }
+  });
+
+  // Decision 15 / publish-contract — per-project public-publish selection.
+  // Opt-in flag persisted in `metadata.publish`; consumed by the app-native
+  // Cloudflare Pages deploy and the website_deploy CI exporter. Merges into the
+  // existing metadata (updateProject replaces metadata wholesale, so we must
+  // carry every prior field forward to avoid detaching project state).
+  app.get('/api/projects/:id/publish', (req, res) => {
+    try {
+      const id = req.params.id;
+      if (!isSafeId(id)) {
+        return sendApiError(res, 400, 'BAD_REQUEST', 'invalid project id');
+      }
+      const existing = getProject(db, id);
+      if (!existing) {
+        return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
+      }
+      const publish = existing.metadata?.publish ?? { enabled: false };
+      res.json({ publish });
+    } catch (err: any) {
+      sendApiError(res, 400, 'BAD_REQUEST', String(err));
+    }
+  });
+
+  app.put('/api/projects/:id/publish', (req, res) => {
+    try {
+      const id = req.params.id;
+      if (!isSafeId(id)) {
+        return sendApiError(res, 400, 'BAD_REQUEST', 'invalid project id');
+      }
+      const existing = getProject(db, id);
+      if (!existing) {
+        return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
+      }
+      const requestBody = (req.body ?? {}) as {
+        enabled?: unknown;
+        entry?: unknown;
+        slug?: unknown;
+      };
+      if (typeof requestBody.enabled !== 'boolean') {
+        return sendApiError(res, 400, 'BAD_REQUEST', 'enabled must be a boolean');
+      }
+      let entry: string | undefined;
+      if (requestBody.entry !== undefined) {
+        if (typeof requestBody.entry !== 'string' || !isPublishableEntryPath(requestBody.entry)) {
+          return sendApiError(
+            res,
+            400,
+            'BAD_REQUEST',
+            'entry must be a project-root-relative .html file path',
+          );
+        }
+        entry = requestBody.entry.trim();
+      }
+      let slug: string | undefined;
+      if (requestBody.slug !== undefined) {
+        if (typeof requestBody.slug !== 'string') {
+          return sendApiError(res, 400, 'BAD_REQUEST', 'slug must be a string');
+        }
+        const normalizedSlug = slugifyPublishSlug(requestBody.slug);
+        if (!normalizedSlug) {
+          return sendApiError(
+            res,
+            400,
+            'BAD_REQUEST',
+            'slug must contain at least one alphanumeric character',
+          );
+        }
+        slug = normalizedSlug;
+      }
+      const priorPublish = existing.metadata?.publish;
+      const nameSlug = slugifyPublishSlug(existing.name);
+      const publish = {
+        enabled: requestBody.enabled,
+        entry: entry ?? priorPublish?.entry ?? existing.metadata?.entryFile ?? 'index.html',
+        slug: slug ?? priorPublish?.slug ?? (nameSlug || id),
+        updatedAt: new Date().toISOString(),
+      };
+      const nextMetadata = {
+        ...(existing.metadata ?? { kind: 'other' as const }),
+        publish,
+      };
+      const project = updateProject(db, id, { metadata: nextMetadata });
+      if (!project) {
+        return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
+      }
+      res.json({ publish });
     } catch (err: any) {
       sendApiError(res, 400, 'BAD_REQUEST', String(err));
     }

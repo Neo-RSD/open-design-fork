@@ -318,6 +318,7 @@ const SUBCOMMAND_MAP = {
   brand: runBrand,
   brands: runBrand,
   project: runProject,
+  publish: runPublish,
   automation: runAutomation,
   automations: runAutomation,
   memory: runMemory,
@@ -345,6 +346,9 @@ const EXPORT_STRING_FLAGS = new Set([
   'daemon-url', 'project', 'format', 'out', 'output', 'image-format', 'title', 'file',
 ]);
 const EXPORT_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'deck', 'page', 'no-deck']);
+
+const PUBLISH_STRING_FLAGS = new Set(['daemon-url', 'entry', 'slug']);
+const PUBLISH_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'enable', 'disable']);
 // EXPORT_FORMATS / EXPORT_IMAGE_FORMATS are the shared contract DTO (single
 // source of truth for the web/daemon/CLI export surface), imported above.
 
@@ -5704,6 +5708,72 @@ async function postImportFolderToDaemon(base, body, baseDir) {
     headers['x-od-desktop-import-token'] = importToken;
   }
   return postJsonToDaemon(base, '/api/import/folder', body, headers);
+}
+
+// od publish — the CLI half of the publish-flag capability (Decision 15 /
+// publish-contract). Mirrors the web toggle against PUT/GET
+// /api/projects/:id/publish so external agents can flag units headlessly.
+async function runPublish(args) {
+  if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage:
+  od publish <projectId> --enable [--entry <index.html>] [--slug <slug>] [--json]
+                    Flag a project for public publishing (opt-in).
+  od publish <projectId> --disable [--json]
+                    Remove the publish flag.
+  od publish status <projectId> [--json]
+                    Show a project's publish config.
+
+Common options:
+  --daemon-url <url>   Open Design daemon HTTP base.
+  --json               Emit raw JSON.`);
+    process.exit(args.length === 0 ? 2 : 0);
+  }
+  const flags = parseFlags(args, { string: PUBLISH_STRING_FLAGS, boolean: PUBLISH_BOOLEAN_FLAGS });
+  const base = (await projectDaemonUrl(flags)).replace(/\/$/, '');
+  const positional = args.filter((a) => !a.startsWith('-'));
+  const isStatus = positional[0] === 'status';
+  const id = isStatus ? positional[1] : positional[0];
+  if (!id) {
+    console.error('Usage: od publish <projectId> --enable|--disable  (or: od publish status <projectId>)');
+    process.exit(2);
+  }
+  if (isStatus) {
+    const resp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/publish`);
+    if (!resp.ok) return structuredHttpFailure(resp, 'project-not-found');
+    const data = await resp.json();
+    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    const publish = data?.publish ?? { enabled: false };
+    console.log(`enabled: ${publish.enabled}`);
+    if (publish.entry) console.log(`entry:   ${publish.entry}`);
+    if (publish.slug) console.log(`slug:    ${publish.slug}`);
+    if (publish.updatedAt) console.log(`updated: ${publish.updatedAt}`);
+    return;
+  }
+  if (flags.enable && flags.disable) {
+    console.error('Pass exactly one of --enable / --disable.');
+    process.exit(2);
+  }
+  if (!flags.enable && !flags.disable) {
+    console.error('Pass --enable or --disable (or use `od publish status <id>`).');
+    process.exit(2);
+  }
+  const body = { enabled: Boolean(flags.enable) };
+  if (typeof flags.entry === 'string' && flags.entry.length > 0) body.entry = flags.entry;
+  if (typeof flags.slug === 'string' && flags.slug.length > 0) body.slug = flags.slug;
+  const resp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/publish`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) return structuredHttpFailure(resp, 'project-not-found');
+  const data = await resp.json();
+  if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+  const publish = data?.publish ?? {};
+  console.log(`${flags.enable ? 'Publishing enabled' : 'Publishing disabled'} for ${id}`);
+  if (flags.enable) {
+    console.log(`  entry: ${publish.entry}`);
+    console.log(`  slug:  ${publish.slug}`);
+  }
 }
 
 async function runProject(args) {
