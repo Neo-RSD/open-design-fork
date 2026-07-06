@@ -1,0 +1,62 @@
+# Path B publish pipeline (Decision 15 / publish-contract). Manual trigger:
+# pulls publish-flagged snapshots from the Open Design daemon and commits them
+# to Neo-RSD/website_deploy under a dedicated publish root, leaving the
+# pre-existing site (src/quick_website_deploys/) untouched. Cloudflare Pages
+# serves website_deploy.
+#
+# Required repo secrets:
+#   OD_BASE_URL           https://design.realsolutions.cloud
+#   OD_API_TOKEN          daemon bearer (bypasses the Traefik basic-auth gate)
+#   WEBSITE_DEPLOY_TOKEN  token with contents:write on Neo-RSD/website_deploy
+name: Publish to website_deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_root:
+        description: Folder in website_deploy to write published units under
+        default: published
+        required: false
+
+concurrency:
+  group: publish-website-deploy
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork (export script)
+        uses: actions/checkout@v4
+
+      - name: Checkout website_deploy
+        uses: actions/checkout@v4
+        with:
+          repository: Neo-RSD/website_deploy
+          token: ${{ secrets.WEBSITE_DEPLOY_TOKEN }}
+          path: website_deploy
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Export publish-flagged snapshots
+        env:
+          OD_BASE_URL: ${{ secrets.OD_BASE_URL }}
+          OD_API_TOKEN: ${{ secrets.OD_API_TOKEN }}
+          PUBLISH_ROOT: ${{ github.event.inputs.publish_root }}
+          OUT_DIR: website_deploy
+        run: node .github/scripts/publish-export.mjs
+
+      - name: Commit + push snapshot
+        working-directory: website_deploy
+        run: |
+          git config user.name "od-publish-bot"
+          git config user.email "od-publish@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No publish changes — nothing to commit."
+          else
+            git commit -m "Publish Open Design snapshot ($(date -u +%FT%TZ))"
+            git push
+          fi
